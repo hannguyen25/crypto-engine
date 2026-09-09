@@ -1,0 +1,25 @@
+[
+  {
+    "input": "mua nửa ví usdt btc",
+    "expected_ir": {
+      "action": "SPOT_SWAP",
+      "source_asset": "USDT",
+      "target_asset": "BTC",
+      "amount_type": "PERCENTAGE",
+      "amount_value": 50.0,
+      "max_slippage_pct": 3.0
+    }
+  },
+  {
+    "input": "long 2k eth gia 3200",
+    "expected_ir": {
+      "action": "LIMIT_ORDER",
+      "source_asset": "USDT",
+      "target_asset": "ETH",
+      "amount_type": "EXACT",
+      "amount_value": 2000.0,
+      "limit_price": 3200.0,
+      "max_slippage_pct": 3.0
+    }
+  }
+]

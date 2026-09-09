@@ -1,0 +1,95 @@
+name: Continuous Evals Pipeline
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'app/**'
+      - 'tests/evals/**'
+      - 'pyproject.toml'
+      - 'poetry.lock'
+
+jobs:
+  evals-suite:
+    name: Run DeepEval Intent & Injection Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports:
+          - 6333:6333
+        options: >-
+          --health-cmd ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' || exit 1"]
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: '1.8.2'
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Cache Poetry dependencies
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py3.11-${{ hashFiles('**/poetry.lock') }}
+          restore-keys: |
+            venv-${{ runner.os }}-py3.11-
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --all-extras
+
+      - name: Create Reports Directory
+        run: mkdir -p reports
+
+      - name: Run Evals Suite with Coverage & Metrics Gate
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          REDIS_URL: redis://localhost:6379/0
+          QDRANT_HOST: localhost
+          QDRANT_PORT: 6333
+          DATABASE_URL: sqlite+aiosqlite:///:memory:
+          JWT_SECRET: ci_jwt_super_secret_test_key_32b_len
+          VAULT_SECRET_KEY: ci_vault_master_deterministic_32b!
+          DEEPEVAL_TELEMETRY_OPT_OUT: "YES"
+          CI: "true"
+        run: |
+          poetry run pytest tests/evals/ \
+            -v -s \
+            --cov=app \
+            --cov-fail-under=90 \
+            --cov-report=term-missing \
+            --junitxml=reports/evals-report.xml
+
+      - name: Upload Evals & Coverage Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evals-test-results
+          path: |
+            reports/evals-report.xml
+            .coverage
