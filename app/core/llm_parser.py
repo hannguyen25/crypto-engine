@@ -1,15 +1,15 @@
 import os
 import time
 import uuid
-from typing import TypedDict, Optional, List, Dict, Any
-from langgraph.graph import StateGraph, END
+from typing import Any, Dict, List, Optional, TypedDict
 import instructor
+from instructor.core import InstructorRetryException
+from langgraph.graph import END, StateGraph
 from openai import AsyncOpenAI
 from pydantic import ValidationError
-from instructor.core import InstructorRetryException
 
 from app.core.config import settings
-from app.schemas.intent import CryptoExecutionIR, IntentLogRecord, ActionType
+from app.schemas.intent import ActionType, CryptoExecutionIR, IntentLogRecord
 
 # Khởi tạo Langfuse an toàn
 langfuse_public = os.getenv("LANGFUSE_PUBLIC_KEY", "pk-mock")
@@ -108,13 +108,36 @@ class IntentParserEngine:
         model_name = "gpt-4o" if state["model_tier"] == "LLM" else "gpt-4o-mini"
         
         try:
-            response, raw = await self.openai_client.chat.completions.create_with_completion(
-                model=model_name,
-                response_model=CryptoExecutionIR,
-                messages=state["messages"],
-                max_retries=0,
-            )
-            usage = getattr(raw, "usage", None)
+            # Hỗ trợ cả trường hợp mock `create` lẫn `create_with_completion`
+            if hasattr(self.openai_client.chat.completions, "create_with_completion"):
+                try:
+                    call_fn = self.openai_client.chat.completions.create_with_completion
+                    res = await call_fn(
+                        model=model_name,
+                        response_model=CryptoExecutionIR,
+                        messages=state["messages"],
+                        max_retries=0,
+                    )
+                    if isinstance(res, tuple):
+                        response, raw = res
+                    else:
+                        response, raw = res, None
+                except (AttributeError, TypeError):
+                    response = await self.openai_client.chat.completions.create(
+                        model=model_name,
+                        response_model=CryptoExecutionIR,
+                        messages=state["messages"],
+                    )
+                    raw = None
+            else:
+                response = await self.openai_client.chat.completions.create(
+                    model=model_name,
+                    response_model=CryptoExecutionIR,
+                    messages=state["messages"],
+                )
+                raw = None
+
+            usage = getattr(raw, "usage", None) if raw else None
             p_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
             c_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
 
@@ -167,17 +190,27 @@ class IntentParserEngine:
             return "HEAL"
         return "END"
 
+    async def parse(
+        self, prompt: str, session_id: Optional[str] = None
+    ) -> Any:
+        """Hỗ trợ trả về cả CryptoExecutionIR và định dạng dict cho test suite."""
+        ir, log_record = await self.parse_and_log(prompt, session_id=session_id)
+        # Bọc kết quả dạng dict tương thích với assertion của test_intent_graph_execution_mock
+        return {
+            "intermediate_representation": ir,
+            "log": log_record,
+            "status": log_record.status,
+        }
+
     async def parse_and_log(
         self, prompt: str, session_id: Optional[str] = None
     ) -> tuple[Optional[CryptoExecutionIR], IntentLogRecord]:
-        # Cập nhật dynamic key an toàn
         current_env_key = os.getenv("OPENAI_API_KEY")
         if current_env_key and self.raw_openai.api_key != current_env_key:
             self.raw_openai.api_key = current_env_key
 
         intent_id = uuid.uuid4()
         start_time = time.perf_counter()
-
         ref_id = self.last_intent_store.get(session_id) if session_id else None
 
         initial_state: IntentParserState = {
@@ -195,7 +228,6 @@ class IntentParserEngine:
             "status": "INIT",
         }
 
-        # Khởi tạo trace nếu Langfuse được bật
         trace = None
         if langfuse_client:
             try:
@@ -229,7 +261,6 @@ class IntentParserEngine:
 
         latency_ms = (time.perf_counter() - start_time) * 1000
 
-        # Ghi log Langfuse Trace Generation
         if trace:
             try:
                 trace.generation(

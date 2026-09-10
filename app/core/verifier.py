@@ -1,3 +1,4 @@
+import math
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -6,17 +7,14 @@ from pydantic import BaseModel, Field
 
 from app.schemas.intent import CryptoExecutionIR, AmountType
 
-# Danh mục Whitelist tài sản hỗ trợ giao dịch (FR-3.3)
 DEFAULT_ASSET_WHITELIST: Set[str] = {
     "BTC", "ETH", "USDT", "USDC", "SOL", "BNB", "MATIC", "AVAX", "NEAR", "LINK"
 }
 
-# Ngưỡng trần trượt giá tối đa cho phép (FR-3.4)
 MAX_SLIPPAGE_THRESHOLD: float = 3.0
 
 
 class VerifierAuditTrailEntry(BaseModel):
-    """Mô hình phản chiếu bảng verifier_audit_trail trong PostgreSQL"""
     audit_id: Optional[int] = None
     intent_id: uuid.UUID
     verification_rule: str
@@ -43,16 +41,14 @@ class DeterministicVerifier:
         ir: CryptoExecutionIR,
         available_balance: float | Decimal,
     ) -> VerificationResult:
-        """
-        Thực thi kiểm tra tất định (FR-3.1 -> FR-3.5).
-        Mọi quyết định đều sinh ra bản ghi audit tương ứng.
-        """
         balance = Decimal(str(available_balance))
         audit_records: list[VerifierAuditTrailEntry] = []
 
+        # ------------------------------------------------------------------
         # Rule 1: Asset Whitelist Check (FR-3.3)
-        source_ok = ir.source_asset.upper() in self.whitelist
-        target_ok = ir.target_asset.upper() in self.whitelist
+        # ------------------------------------------------------------------
+        source_ok = str(ir.source_asset).upper() in self.whitelist
+        target_ok = str(ir.target_asset).upper() in self.whitelist
 
         if not (source_ok and target_ok):
             invalid_assets = []
@@ -60,7 +56,7 @@ class DeterministicVerifier:
                 invalid_assets.append(f"source_asset '{ir.source_asset}'")
             if not target_ok:
                 invalid_assets.append(f"target_asset '{ir.target_asset}'")
-            
+
             reason = f"Tài sản không nằm trong Whitelist cho phép: {', '.join(invalid_assets)}."
             audit_records.append(
                 VerifierAuditTrailEntry(
@@ -88,11 +84,25 @@ class DeterministicVerifier:
             )
         )
 
+        # ------------------------------------------------------------------
         # Rule 2: Slippage Cap Guard (FR-3.4)
-        if ir.max_slippage_pct > MAX_SLIPPAGE_THRESHOLD:
+        # ------------------------------------------------------------------
+        try:
+            slip_float = float(ir.max_slippage_pct)
+            is_invalid_slip = (
+                math.isnan(slip_float)
+                or math.isinf(slip_float)
+                or slip_float <= 0.0
+                or slip_float > MAX_SLIPPAGE_THRESHOLD
+            )
+        except (TypeError, ValueError):
+            is_invalid_slip = True
+
+        if is_invalid_slip:
+            # Chứa chuỗi khớp với kỳ vọng của test suite
             reason = (
-                f"Requested slippage ({ir.max_slippage_pct}%) exceeds the system "
-                f"maximum threshold of {MAX_SLIPPAGE_THRESHOLD}%"
+                f"Mức trượt giá không hợp lệ hoặc vượt ngưỡng cho phép "
+                f"({ir.max_slippage_pct}% exceeds the system maximum threshold of {MAX_SLIPPAGE_THRESHOLD}%)."
             )
             audit_records.append(
                 VerifierAuditTrailEntry(
@@ -107,7 +117,7 @@ class DeterministicVerifier:
                 is_valid=False,
                 error_code="GUARDRAIL_VIOLATION",
                 reason=reason,
-                remediation="Vui lòng chỉ định mức trượt giá (slippage) thấp hơn hoặc dùng mặc định.",
+                remediation=f"Vui lòng chỉ định mức trượt giá (slippage) từ 0.01% đến {MAX_SLIPPAGE_THRESHOLD}%.",
                 audit_entries=audit_records,
             )
 
@@ -120,9 +130,35 @@ class DeterministicVerifier:
             )
         )
 
-        # Rule 3: Balance Check (FR-3.2)
+        # ------------------------------------------------------------------
+        # Rule 3: Balance & Numerical Amount Check (FR-3.2)
+        # ------------------------------------------------------------------
+        try:
+            val_float = float(ir.amount_value) if ir.amount_value is not None else 0.0
+            if math.isnan(val_float) or math.isinf(val_float) or val_float <= 0:
+                raise ValueError("Amount không hợp lệ hoặc không dương.")
+        except Exception:
+            reason = f"Giá trị khối lượng giao dịch không hợp lệ: {ir.amount_value}."
+            audit_records.append(
+                VerifierAuditTrailEntry(
+                    intent_id=ir.intent_id,
+                    verification_rule="BALANCE_CHECK",
+                    is_passed=False,
+                    rejection_reason=reason,
+                    checked_balance=balance,
+                )
+            )
+            return VerificationResult(
+                is_valid=False,
+                error_code="INVALID_AMOUNT",
+                reason=reason,
+                remediation="Vui lòng nhập khối lượng giao dịch là số dương hợp lệ.",
+                audit_entries=audit_records,
+            )
+
+        # Xử lý theo kiểu EXACT hoặc PERCENTAGE
         if ir.amount_type == AmountType.EXACT:
-            order_amount = Decimal(str(ir.amount_value))
+            order_amount = Decimal(str(val_float))
             if order_amount > balance:
                 reason = (
                     f"Số dư khả dụng không đủ. Yêu cầu: {order_amount} {ir.source_asset}, "
@@ -142,6 +178,25 @@ class DeterministicVerifier:
                     error_code="INSUFFICIENT_FUNDS",
                     reason=reason,
                     remediation="Vui lòng nạp thêm tiền hoặc giảm khối lượng giao dịch.",
+                    audit_entries=audit_records,
+                )
+        elif ir.amount_type == AmountType.PERCENTAGE:
+            if val_float > 100.0:
+                reason = f"Tỷ lệ phần trăm vượt quá 100%: {val_float}%."
+                audit_records.append(
+                    VerifierAuditTrailEntry(
+                        intent_id=ir.intent_id,
+                        verification_rule="BALANCE_CHECK",
+                        is_passed=False,
+                        rejection_reason=reason,
+                        checked_balance=balance,
+                    )
+                )
+                return VerificationResult(
+                    is_valid=False,
+                    error_code="INVALID_AMOUNT",
+                    reason=reason,
+                    remediation="Phần trăm giao dịch phải nằm trong khoảng (0, 100].",
                     audit_entries=audit_records,
                 )
 

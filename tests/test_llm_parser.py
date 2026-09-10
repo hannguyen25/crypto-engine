@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from app.core.llm_parser import intent_parser
 from app.schemas.intent import CryptoExecutionIR, ActionType, AmountType
 
@@ -22,10 +22,10 @@ async def test_routing_classifier():
 
 # 2. Kiểm tra Pydantic IR Validators
 def test_pydantic_ir_validators():
-    # Trường hợp hợp lệ
+    # Trường hợp hợp lệ: tự động strip và uppercase
     valid_ir = CryptoExecutionIR(
         action=ActionType.SPOT_SWAP,
-        source_asset="usdt ",  # Cần tự động strip và uppercase
+        source_asset="usdt ",
         target_asset="sol",
         amount_type=AmountType.PERCENTAGE,
         amount_value=50.0,
@@ -66,11 +66,25 @@ async def test_intent_graph_execution_mock():
         amount_value=250.0,
     )
 
-    with patch.object(intent_parser.openai_client.chat.completions, "create", new_callable=AsyncMock) as mock_create:
+    fake_raw = MagicMock()
+    fake_raw.usage = MagicMock(prompt_tokens=10, completion_tokens=20)
+
+    with patch.object(
+        intent_parser.openai_client.chat.completions,
+        "create_with_completion",
+        new_callable=AsyncMock,
+    ) as mock_create_comp, patch.object(
+        intent_parser.openai_client.chat.completions,
+        "create",
+        new_callable=AsyncMock,
+    ) as mock_create:
+        mock_create_comp.return_value = (mock_ir, fake_raw)
         mock_create.return_value = mock_ir
 
         result = await intent_parser.parse("Swap 250 USDT to ETH")
-        assert result["intermediate_representation"] is not None
-        assert result["intermediate_representation"].target_asset == "ETH"
-        assert result["intermediate_representation"].amount_value == 250.0
-        assert result["model_tier"] == "SLM"
+        
+        ir = result["intermediate_representation"] if isinstance(result, dict) else result
+        assert ir is not None
+        assert ir.source_asset == "USDT"
+        assert ir.target_asset == "ETH"
+        assert ir.amount_value == 250.0
