@@ -47,9 +47,9 @@ async def cleanup_redis():
 
 # 5. Dọn dẹp connection pool DB
 @pytest_asyncio.fixture(autouse=True)
-async def cleanup_db_pool():
+async def cleanup_connections():
     yield
-    try:
-        await engine.dispose()
-    except Exception:
-        pass
+    # Tự động hủy các task nền tồn đọng nếu có
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    for task in tasks:
+        task.cancel()

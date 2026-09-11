@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.config import settings
 
 # Lấy trực tiếp URL asyncpg từ settings
-TEST_ASYNC_DB_URL = settings.DATABASE_URL
+TEST_ASYNC_DB_URL = settings.POSTGRES_URL
 
 def test_tc_db_01_migration_consistency():
     alembic_cfg = Config("alembic.ini")
