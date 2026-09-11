@@ -3,7 +3,7 @@ import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 import redis.asyncio as aioredis
-
+import sys
 from app.main import app
 from app.core.config import settings
 from app.core.security import create_access_token
@@ -13,7 +13,9 @@ from app.db.session import engine
 # 1. Cấu hình Event Loop Policy chuẩn cho Windows Proactor
 @pytest.fixture(scope="session")
 def event_loop_policy():
-    return asyncio.WindowsProactorEventLoopPolicy()
+    if sys.platform == "win32":
+        return asyncio.WindowsProactorEventLoopPolicy()
+    return None
 
 
 # 2. HTTP Async Client Fixture
