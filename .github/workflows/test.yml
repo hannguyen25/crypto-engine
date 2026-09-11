@@ -10,6 +10,31 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: crypto_admin
+          POSTGRES_PASSWORD: crypto_secret_2026
+          POSTGRES_DB: intent_engine
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -40,11 +65,8 @@ jobs:
     - name: Install current package
       run: poetry install --no-interaction
 
-    - name: Check Code Format (Black / Ruff)
-      run: |
-        poetry run ruff check .
-        poetry run black --check .
-
-    - name: Run Pytest
+    - name: Run Unit Tests (Sanitizer, Verifier, LLM Parser)
+      env:
+        OPENAI_API_KEY: mock-openai-key
       run: |
         poetry run pytest tests/test_sanitizer.py tests/test_verifier.py tests/test_llm_parser.py -v

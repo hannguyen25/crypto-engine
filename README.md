@@ -1,5 +1,7 @@
 # ⚡ Crypto Intent Engine (v1.0.0)
 
+[![CI/CD Pipeline](https://github.com/hannguyen25/crypto-engine/actions/workflows/test.yml/badge.svg)](https://github.com/hannguyen25/crypto-engine/actions/workflows/test.yml)
+
 [![Python 3.11](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/Framework-FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
 [![Throughput](https://img.shields.io/badge/Peak%20Throughput-590%2B%20RPS-brightgreen.svg)]()
